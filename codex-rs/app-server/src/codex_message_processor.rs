@@ -37,6 +37,7 @@ use codex_app_server_protocol::ExecOneOffCommandResponse;
 use codex_app_server_protocol::ExperimentalFeature as ApiExperimentalFeature;
 use codex_app_server_protocol::ExperimentalFeatureListParams;
 use codex_app_server_protocol::ExperimentalFeatureListResponse;
+use codex_app_server_protocol::ExperimentalFeatureStage as ApiExperimentalFeatureStage;
 use codex_app_server_protocol::FeedbackUploadParams;
 use codex_app_server_protocol::FeedbackUploadResponse;
 use codex_app_server_protocol::ForkConversationParams;
@@ -138,6 +139,8 @@ use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::TurnStartedNotification;
 use codex_app_server_protocol::TurnStatus;
+use codex_app_server_protocol::TurnSteerParams;
+use codex_app_server_protocol::TurnSteerResponse;
 use codex_app_server_protocol::UserInfoResponse;
 use codex_app_server_protocol::UserInput as V2UserInput;
 use codex_app_server_protocol::UserSavedConfig;
@@ -153,6 +156,7 @@ use codex_core::InitialHistory;
 use codex_core::NewThread;
 use codex_core::RolloutRecorder;
 use codex_core::SessionMeta;
+use codex_core::SteerInputError;
 use codex_core::ThreadConfigSnapshot;
 use codex_core::ThreadManager;
 use codex_core::ThreadSortKey as CoreThreadSortKey;
@@ -202,6 +206,7 @@ use codex_login::ServerOptions as LoginServerOptions;
 use codex_login::ShutdownHandle;
 use codex_login::run_login_server;
 use codex_protocol::ThreadId;
+use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ForcedLoginMethod;
 use codex_protocol::config_types::Personality;
 use codex_protocol::config_types::WindowsSandboxLevel;
@@ -314,7 +319,7 @@ pub(crate) struct CodexMessageProcessorArgs {
     pub(crate) codex_linux_sandbox_exe: Option<PathBuf>,
     pub(crate) config: Arc<Config>,
     pub(crate) cli_overrides: Vec<(String, TomlValue)>,
-    pub(crate) cloud_requirements: CloudRequirementsLoader,
+    pub(crate) cloud_requirements: Arc<RwLock<CloudRequirementsLoader>>,
     pub(crate) feedback: CodexFeedback,
 }
 
@@ -360,7 +365,7 @@ impl CodexMessageProcessor {
             codex_linux_sandbox_exe,
             config,
             cli_overrides,
-            cloud_requirements: Arc::new(RwLock::new(cloud_requirements)),
+            cloud_requirements,
             conversation_listeners: HashMap::new(),
             listener_thread_ids_by_subscription: HashMap::new(),
             active_login: Arc::new(Mutex::new(None)),
@@ -391,6 +396,27 @@ impl CodexMessageProcessor {
             .read()
             .map(|guard| guard.clone())
             .unwrap_or_default()
+    }
+
+    /// If a client sends `developer_instructions: null` during a mode switch,
+    /// use the built-in instructions for that mode.
+    fn normalize_turn_start_collaboration_mode(
+        &self,
+        mut collaboration_mode: CollaborationMode,
+    ) -> CollaborationMode {
+        if collaboration_mode.settings.developer_instructions.is_none()
+            && let Some(instructions) = self
+                .thread_manager
+                .list_collaboration_modes()
+                .into_iter()
+                .find(|preset| preset.mode == Some(collaboration_mode.mode))
+                .and_then(|preset| preset.developer_instructions.flatten())
+                .filter(|instructions| !instructions.is_empty())
+        {
+            collaboration_mode.settings.developer_instructions = Some(instructions);
+        }
+
+        collaboration_mode
     }
 
     fn review_request_from_target(
@@ -529,6 +555,10 @@ impl CodexMessageProcessor {
             }
             ClientRequest::TurnStart { request_id, params } => {
                 self.turn_start(to_connection_request_id(request_id), params)
+                    .await;
+            }
+            ClientRequest::TurnSteer { request_id, params } => {
+                self.turn_steer(to_connection_request_id(request_id), params)
                     .await;
             }
             ClientRequest::TurnInterrupt { request_id, params } => {
@@ -1848,31 +1878,11 @@ impl CodexMessageProcessor {
                     ..
                 } = new_conv;
                 let config_snapshot = thread.config_snapshot().await;
-                let fallback_provider = self.config.model_provider_id.as_str();
-
-                // A bit hacky, but the summary contains a lot of useful information for the thread
-                // that unfortunately does not get returned from thread_manager.start_thread().
-                let thread = match session_configured.rollout_path.as_ref() {
-                    Some(rollout_path) => {
-                        match read_summary_from_rollout(rollout_path.as_path(), fallback_provider)
-                            .await
-                        {
-                            Ok(summary) => summary_to_thread(summary),
-                            Err(err) => {
-                                self.send_internal_error(
-                                    request_id,
-                                    format!(
-                                        "failed to load rollout `{}` for thread {thread_id}: {err}",
-                                        rollout_path.display()
-                                    ),
-                                )
-                                .await;
-                                return;
-                            }
-                        }
-                    }
-                    None => build_ephemeral_thread(thread_id, &config_snapshot),
-                };
+                let thread = build_thread_from_snapshot(
+                    thread_id,
+                    &config_snapshot,
+                    session_configured.rollout_path.clone(),
+                );
 
                 let response = ThreadStartResponse {
                     thread: thread.clone(),
@@ -2468,7 +2478,8 @@ impl CodexMessageProcessor {
                 return;
             };
             let config_snapshot = thread.config_snapshot().await;
-            if include_turns {
+            let loaded_rollout_path = thread.rollout_path();
+            if include_turns && loaded_rollout_path.is_none() {
                 self.send_invalid_request_error(
                     request_id,
                     "ephemeral threads do not support includeTurns".to_string(),
@@ -2476,13 +2487,26 @@ impl CodexMessageProcessor {
                 .await;
                 return;
             }
-            build_ephemeral_thread(thread_uuid, &config_snapshot)
+            if include_turns {
+                rollout_path = loaded_rollout_path.clone();
+            }
+            build_thread_from_snapshot(thread_uuid, &config_snapshot, loaded_rollout_path)
         };
 
         if include_turns && let Some(rollout_path) = rollout_path.as_ref() {
             match read_event_msgs_from_rollout(rollout_path).await {
                 Ok(events) => {
                     thread.turns = build_turns_from_event_msgs(&events);
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                    self.send_invalid_request_error(
+                        request_id,
+                        format!(
+                            "thread {thread_uuid} is not materialized yet; includeTurns is unavailable before first user message"
+                        ),
+                    )
+                    .await;
+                    return;
                 }
                 Err(err) => {
                     self.send_internal_error(
@@ -3262,23 +3286,40 @@ impl CodexMessageProcessor {
 
         let data = FEATURES
             .iter()
-            .filter_map(|spec| {
-                let Stage::Experimental {
-                    name,
-                    menu_description,
-                    announcement,
-                } = spec.stage
-                else {
-                    return None;
+            .map(|spec| {
+                let (stage, display_name, description, announcement) = match spec.stage {
+                    Stage::Experimental {
+                        name,
+                        menu_description,
+                        announcement,
+                    } => (
+                        ApiExperimentalFeatureStage::Beta,
+                        Some(name.to_string()),
+                        Some(menu_description.to_string()),
+                        Some(announcement.to_string()),
+                    ),
+                    Stage::UnderDevelopment => (
+                        ApiExperimentalFeatureStage::UnderDevelopment,
+                        None,
+                        None,
+                        None,
+                    ),
+                    Stage::Stable => (ApiExperimentalFeatureStage::Stable, None, None, None),
+                    Stage::Deprecated => {
+                        (ApiExperimentalFeatureStage::Deprecated, None, None, None)
+                    }
+                    Stage::Removed => (ApiExperimentalFeatureStage::Removed, None, None, None),
                 };
-                Some(ApiExperimentalFeature {
-                    flag_name: spec.key.to_string(),
-                    display_name: name.to_string(),
-                    description: menu_description.to_string(),
-                    announcement: announcement.to_string(),
+
+                ApiExperimentalFeature {
+                    name: spec.key.to_string(),
+                    stage,
+                    display_name,
+                    description,
+                    announcement,
                     enabled: config.features.enabled(spec.id),
                     default_enabled: spec.default_enabled,
-                })
+                }
             })
             .collect::<Vec<_>>();
 
@@ -3317,7 +3358,7 @@ impl CodexMessageProcessor {
         if start > total {
             self.send_invalid_request_error(
                 request_id,
-                format!("cursor {start} exceeds total experimental features {total}"),
+                format!("cursor {start} exceeds total feature flags {total}"),
             )
             .await;
             return;
@@ -4529,6 +4570,10 @@ impl CodexMessageProcessor {
             }
         };
 
+        let collaboration_mode = params
+            .collaboration_mode
+            .map(|mode| self.normalize_turn_start_collaboration_mode(mode));
+
         // Map v2 input items to core input items.
         let mapped_items: Vec<CoreInputItem> = params
             .input
@@ -4542,7 +4587,7 @@ impl CodexMessageProcessor {
             || params.model.is_some()
             || params.effort.is_some()
             || params.summary.is_some()
-            || params.collaboration_mode.is_some()
+            || collaboration_mode.is_some()
             || params.personality.is_some();
 
         // If any overrides are provided, update the session turn context first.
@@ -4556,7 +4601,7 @@ impl CodexMessageProcessor {
                     model: params.model,
                     effort: params.effort.map(Some),
                     summary: params.summary,
-                    collaboration_mode: params.collaboration_mode,
+                    collaboration_mode,
                     personality: params.personality,
                 })
                 .await;
@@ -4595,6 +4640,63 @@ impl CodexMessageProcessor {
                 let error = JSONRPCErrorError {
                     code: INTERNAL_ERROR_CODE,
                     message: format!("failed to start turn: {err}"),
+                    data: None,
+                };
+                self.outgoing.send_error(request_id, error).await;
+            }
+        }
+    }
+
+    async fn turn_steer(&self, request_id: ConnectionRequestId, params: TurnSteerParams) {
+        let (_, thread) = match self.load_thread(&params.thread_id).await {
+            Ok(v) => v,
+            Err(error) => {
+                self.outgoing.send_error(request_id, error).await;
+                return;
+            }
+        };
+
+        if params.expected_turn_id.is_empty() {
+            self.send_invalid_request_error(
+                request_id,
+                "expectedTurnId must not be empty".to_string(),
+            )
+            .await;
+            return;
+        }
+
+        let mapped_items: Vec<CoreInputItem> = params
+            .input
+            .into_iter()
+            .map(V2UserInput::into_core)
+            .collect();
+
+        match thread
+            .steer_input(mapped_items, Some(&params.expected_turn_id))
+            .await
+        {
+            Ok(turn_id) => {
+                let response = TurnSteerResponse { turn_id };
+                self.outgoing.send_response(request_id, response).await;
+            }
+            Err(err) => {
+                let (code, message) = match err {
+                    SteerInputError::NoActiveTurn(_) => (
+                        INVALID_REQUEST_ERROR_CODE,
+                        "no active turn to steer".to_string(),
+                    ),
+                    SteerInputError::ExpectedTurnMismatch { expected, actual } => (
+                        INVALID_REQUEST_ERROR_CODE,
+                        format!("expected active turn id `{expected}` but found `{actual}`"),
+                    ),
+                    SteerInputError::EmptyInput => (
+                        INVALID_REQUEST_ERROR_CODE,
+                        "input must not be empty".to_string(),
+                    ),
+                };
+                let error = JSONRPCErrorError {
+                    code,
+                    message,
                     data: None,
                 };
                 self.outgoing.send_error(request_id, error).await;
@@ -5685,7 +5787,11 @@ async fn read_updated_at(path: &Path, created_at: Option<&str>) -> Option<String
     updated_at.or_else(|| created_at.map(str::to_string))
 }
 
-fn build_ephemeral_thread(thread_id: ThreadId, config_snapshot: &ThreadConfigSnapshot) -> Thread {
+fn build_thread_from_snapshot(
+    thread_id: ThreadId,
+    config_snapshot: &ThreadConfigSnapshot,
+    path: Option<PathBuf>,
+) -> Thread {
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
     Thread {
         id: thread_id.to_string(),
@@ -5693,7 +5799,7 @@ fn build_ephemeral_thread(thread_id: ThreadId, config_snapshot: &ThreadConfigSna
         model_provider: config_snapshot.model_provider_id.clone(),
         created_at: now,
         updated_at: now,
-        path: None,
+        path,
         cwd: config_snapshot.cwd.clone(),
         cli_version: env!("CARGO_PKG_VERSION").to_string(),
         source: config_snapshot.session_source.clone().into(),
