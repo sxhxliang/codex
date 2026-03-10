@@ -58,6 +58,7 @@ mod dynamic_tools;
 mod error_code;
 mod filters;
 mod fuzzy_file_search;
+mod in_process;
 mod message_processor;
 mod models;
 mod outgoing_message;
@@ -65,6 +66,8 @@ mod thread_state;
 mod transport;
 
 pub use crate::transport::AppServerTransport;
+pub use in_process::InProcessAppServer;
+pub use in_process::InProcessAppServerOptions;
 
 /// Control-plane messages from the processor/transport side to the outbound router task.
 ///
@@ -435,12 +438,13 @@ pub async fn run_main_with_transport(
         let cli_overrides: Vec<(String, TomlValue)> = cli_kv_overrides.clone();
         let loader_overrides = loader_overrides_for_config_api;
         let mut processor = MessageProcessor::new(MessageProcessorArgs {
-            outgoing: outgoing_message_sender,
             codex_linux_sandbox_exe,
+            outgoing: outgoing_message_sender,
             config: Arc::new(config),
             cli_overrides,
             loader_overrides,
             cloud_requirements: cloud_requirements.clone(),
+            disable_response_websockets: false,
             feedback: feedback.clone(),
             config_warnings,
         });

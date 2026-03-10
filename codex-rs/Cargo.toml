@@ -4,6 +4,7 @@ members = [
     "ansi-escape",
     "async-utils",
     "app-server",
+    "app-server-sdk",
     "app-server-protocol",
     "app-server-test-client",
     "debug-client",
@@ -80,6 +81,7 @@ app_test_support = { path = "app-server/tests/common" }
 codex-ansi-escape = { path = "ansi-escape" }
 codex-api = { path = "codex-api" }
 codex-app-server = { path = "app-server" }
+codex-app-server-sdk = { path = "app-server-sdk" }
 codex-app-server-protocol = { path = "app-server-protocol" }
 codex-app-server-test-client = { path = "app-server-test-client" }
 codex-apply-patch = { path = "apply-patch" }

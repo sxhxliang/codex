@@ -1411,6 +1411,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-app-server-sdk"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "app_test_support",
+ "codex-app-server",
+ "codex-app-server-protocol",
+ "codex-core",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "codex-app-server-test-client"
 version = "0.0.0"
 dependencies = [
