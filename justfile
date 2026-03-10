@@ -51,6 +51,14 @@ test:
 bazel-codex *args:
     bazel run //codex-rs/cli:codex --run_under="cd $PWD &&" -- "$@"
 
+[no-cd]
+bazel-lock-update:
+    bazel mod deps --lockfile_mode=update
+
+[no-cd]
+bazel-lock-check:
+    ./scripts/check-module-bazel-lock.sh
+
 bazel-test:
     bazel test //... --keep_going
 
@@ -69,8 +77,8 @@ write-config-schema:
     cargo run -p codex-core --bin codex-write-config-schema
 
 # Regenerate vendored app-server protocol schema artifacts.
-write-app-server-schema:
-    cargo run -p codex-app-server-protocol --bin write_schema_fixtures
+write-app-server-schema *args:
+    cargo run -p codex-app-server-protocol --bin write_schema_fixtures -- "$@"
 
 # Tail logs from the state SQLite database
 log *args:
