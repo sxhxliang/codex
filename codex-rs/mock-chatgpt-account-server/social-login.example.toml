@@ -1,0 +1,32 @@
+[social_login.google]
+enabled = true
+label = "Continue with Google"
+subtitle = "debug@example.com"
+client_id = "replace-with-google-client-id"
+client_secret = "replace-with-google-client-secret"
+authorize_url = "https://accounts.google.com/o/oauth2/v2/auth"
+token_url = "https://oauth2.googleapis.com/token"
+user_info_url = "https://openidconnect.googleapis.com/v1/userinfo"
+scopes = ["openid", "email", "profile"]
+
+[social_login.github]
+enabled = true
+label = "Continue with GitHub"
+subtitle = "@debug-codex"
+client_id = "replace-with-github-client-id"
+client_secret = "replace-with-github-client-secret"
+authorize_url = "https://github.com/login/oauth/authorize"
+token_url = "https://github.com/login/oauth/access_token"
+user_info_url = "https://api.github.com/user"
+user_email_url = "https://api.github.com/user/emails"
+scopes = ["read:user", "user:email"]
+
+[[responses_proxy.upstreams]]
+name = "openai-primary"
+base_url = "https://api.openai.com/v1"
+api_key = "replace-with-upstream-api-key-1"
+
+[[responses_proxy.upstreams]]
+name = "openai-secondary"
+base_url = "https://example-openai-compatible.internal/v1"
+api_key = "replace-with-upstream-api-key-2"

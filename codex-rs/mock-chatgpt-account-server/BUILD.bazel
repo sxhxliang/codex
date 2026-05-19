@@ -1,0 +1,12 @@
+load("//:defs.bzl", "codex_rust_crate")
+
+codex_rust_crate(
+    name = "mock-chatgpt-account-server",
+    crate_name = "codex_mock_chatgpt_account_server",
+    compile_data = [
+        "frontend/dist/index.html",
+        "frontend/dist/assets/app.css",
+        "frontend/dist/assets/app.js",
+    ],
+)
+
