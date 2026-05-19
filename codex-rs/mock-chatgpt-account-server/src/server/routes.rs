@@ -147,10 +147,23 @@ async fn dispatch_http(
             handle_device_token(&state, &body).await
         }
         (Method::POST, "/codex/device") => handle_device_approval(&state, &headers, &body).await,
+        (Method::POST, "/codex/analytics-events/events")
+        | (Method::POST, "/backend-api/codex/analytics-events/events") => {
+            handle_analytics_events(&state, &headers)
+        }
+        (Method::GET, "/ps/plugins/installed")
+        | (Method::GET, "/backend-api/ps/plugins/installed") => {
+            handle_plugins_installed(&state, &headers)
+        }
+        (Method::GET, "/plugins/featured") | (Method::GET, "/backend-api/plugins/featured") => {
+            handle_plugins_featured(&state, &headers)
+        }
         _ => {
             if method == Method::GET {
                 if let Some(provider_id) = parse_social_login_callback_path(path) {
                     handle_browser_shortcut_callback(&state, &headers, &query, provider_id).await
+                } else if let Some(account_id) = parse_account_settings_path(path) {
+                    handle_account_settings(&state, &headers, account_id)
                 } else if path == "/api/codex/usage"
                     || path == "/wham/usage"
                     || path == "/backend-api/wham/usage"
@@ -973,6 +986,40 @@ fn handle_config_requirements(state: &AppState, headers: &HeaderMap) -> Response
     json_response(StatusCode::OK, &requirements)
 }
 
+fn handle_plugins_installed(state: &AppState, headers: &HeaderMap) -> Response {
+    if let Err(response) = require_chatgpt_auth(state, headers) {
+        return response;
+    }
+    json_response(
+        StatusCode::OK,
+        &json!({
+            "plugins": [],
+            "pagination": { "limit": 50, "next_page_token": Value::Null },
+        }),
+    )
+}
+
+fn handle_plugins_featured(state: &AppState, headers: &HeaderMap) -> Response {
+    if let Err(response) = require_chatgpt_auth(state, headers) {
+        return response;
+    }
+    json_response(StatusCode::OK, &json!([]))
+}
+
+fn handle_account_settings(state: &AppState, headers: &HeaderMap, _account_id: &str) -> Response {
+    if let Err(response) = require_chatgpt_auth(state, headers) {
+        return response;
+    }
+    json_response(StatusCode::OK, &json!({ "beta_settings": {} }))
+}
+
+fn handle_analytics_events(state: &AppState, headers: &HeaderMap) -> Response {
+    if let Err(response) = require_chatgpt_auth(state, headers) {
+        return response;
+    }
+    json_response(StatusCode::OK, &json!({ "accepted": true }))
+}
+
 async fn handle_task_list(state: &AppState, headers: &HeaderMap) -> Response {
     if let Err(response) = require_chatgpt_auth(state, headers) {
         return response;
@@ -1518,6 +1565,20 @@ fn parse_social_login_callback_path(path: &str) -> Option<&str> {
     } else {
         Some(provider_id)
     }
+}
+
+fn parse_account_settings_path(path: &str) -> Option<&str> {
+    const PREFIXES: [&str; 2] = ["/accounts/", "/backend-api/accounts/"];
+    for prefix in PREFIXES {
+        let Some(remainder) = path.strip_prefix(prefix) else {
+            continue;
+        };
+        let account_id = remainder.strip_suffix("/settings")?;
+        if !account_id.is_empty() && !account_id.contains('/') {
+            return Some(account_id);
+        }
+    }
+    None
 }
 
 #[cfg(test)]
