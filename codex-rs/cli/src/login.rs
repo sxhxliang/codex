@@ -117,13 +117,18 @@ pub async fn login_with_chatgpt(
     codex_home: PathBuf,
     forced_chatgpt_workspace_id: Option<Vec<String>>,
     cli_auth_credentials_store_mode: AuthCredentialsStoreMode,
+    issuer_base_url: Option<String>,
+    client_id: Option<String>,
 ) -> std::io::Result<()> {
-    let opts = ServerOptions::new(
+    let mut opts = ServerOptions::new(
         codex_home,
-        CLIENT_ID.to_string(),
+        client_id.unwrap_or_else(|| CLIENT_ID.to_string()),
         forced_chatgpt_workspace_id,
         cli_auth_credentials_store_mode,
     );
+    if let Some(iss) = issuer_base_url {
+        opts.issuer = iss;
+    }
     let server = run_login_server(opts)?;
 
     print_login_server_start(server.actual_port, &server.auth_url);
@@ -131,7 +136,11 @@ pub async fn login_with_chatgpt(
     server.block_until_done().await
 }
 
-pub async fn run_login_with_chatgpt(cli_config_overrides: CliConfigOverrides) -> ! {
+pub async fn run_login_with_chatgpt(
+    cli_config_overrides: CliConfigOverrides,
+    issuer_base_url: Option<String>,
+    client_id: Option<String>,
+) -> ! {
     let config = load_config_or_exit(cli_config_overrides).await;
     let _login_log_guard = init_login_file_logging(&config);
     tracing::info!("starting browser login flow");
@@ -147,6 +156,8 @@ pub async fn run_login_with_chatgpt(cli_config_overrides: CliConfigOverrides) ->
         config.codex_home.to_path_buf(),
         forced_chatgpt_workspace_id,
         config.cli_auth_credentials_store_mode,
+        issuer_base_url,
+        client_id,
     )
     .await
     {

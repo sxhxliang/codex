@@ -139,6 +139,7 @@ async fn dispatch_http(
             handle_authorize_approve(&state, &headers, &body).await
         }
         (Method::POST, "/oauth/token") => handle_oauth_token(&state, &headers, &body),
+        (Method::POST, "/oauth/revoke") => handle_oauth_revoke(&state, &headers, &body),
         (Method::POST, "/backend-api/codex/responses") | (Method::POST, "/v1/responses") => {
             handle_responses(&state, &headers, &body).await
         }
@@ -833,6 +834,11 @@ fn handle_oauth_token(state: &AppState, headers: &HeaderMap, body: &Bytes) -> Re
         StatusCode::BAD_REQUEST,
         &json!({ "error": format!("unsupported grant_type: {grant_type}") }),
     )
+}
+
+fn handle_oauth_revoke(state: &AppState, headers: &HeaderMap, body: &Bytes) -> Response {
+    let _ = (state, headers, body);
+    json_response(StatusCode::OK, &json!({}))
 }
 
 async fn handle_responses(state: &AppState, headers: &HeaderMap, body: &Bytes) -> Response {
