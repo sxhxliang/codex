@@ -45,6 +45,7 @@ members = [
     "execpolicy",
     "execpolicy-legacy",
     "ext/extension-api",
+    "ext/goal",
     "ext/guardian",
     "ext/memories",
     "external-agent-migration",
@@ -171,6 +172,8 @@ codex-file-search = { path = "file-search" }
 codex-file-system = { path = "file-system" }
 codex-file-watcher = { path = "file-watcher" }
 codex-git-utils = { path = "git-utils" }
+codex-goal-extension = { path = "ext/goal" }
+codex-guardian = { path = "ext/guardian" }
 codex-guardian = { path = "ext/guardian" }
 codex-hooks = { path = "hooks" }
 codex-install-context = { path = "install-context" }
@@ -474,6 +477,7 @@ unwrap_used = "deny"
 [workspace.metadata.cargo-shear]
 ignored = [
     "codex-agent-graph-store",
+    "codex-goal-extension",
     "icu_provider",
     "openssl-sys",
     "codex-v8-poc",
